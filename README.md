@@ -89,7 +89,7 @@ It introduces a biologically motivated **growth curriculum** that schedules torq
 ## Troubleshooting:
 ### Contact
 + Corresponding author CAO Yuhong: caoyuhong@nus.edu.sg
-+ Deployment and Ray-Prediction: LI Peizhuo: lipeizhuo@u.nus.edu 
++ Deployment: LI Peizhuo: lipeizhuo@u.nus.edu 
 + Policy Learning in Sim: LI Hongyi: hongyi.li@u.nus.edu
 
 
