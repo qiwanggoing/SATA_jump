@@ -7,7 +7,7 @@ Accepted at **Robotics: Science and Systems (RSS) 2025**
 LI Peizhuo*. LI Hongyi*, Ge SUN, Jin CHENG, Xinrong YANG, Guillaume Bellegarda, Milad Shafiee, [Yuhong CAO](https://www.yuhongcao.online), Auke Ijspeert, [Guillaume SARTORETTI](https://cde.nus.edu.sg/me/staff/sartoretti-guillaume-a/)
 
 <p align="center">
-  <img src="images/sata_overview.png" width="80%" />
+  <img src="sata_overview.png" width="80%" />
 </p>
 
 ---
