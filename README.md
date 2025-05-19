@@ -4,7 +4,7 @@ Official Implementation for **[SATA: Safe and Adaptive Torque-Based Locomotion P
 
 Accepted at **Robotics: Science and Systems (RSS) 2025**
 
-LI Peizhuo*. LI Hongyi*, Ge SUN, Jin CHENG, Xinrong YANG, Guillaume BELLEGARDA, Milad SHAFIEE, [Yuhong CAO](https://www.yuhongcao.online), Auke IJSPEERT, [Guillaume SARTORETTI](https://cde.nus.edu.sg/me/staff/sartoretti-guillaume-a/)
+LI Peizhuo*. LI Hongyi*, Ge SUN, [Jin CHENG](https://jin-cheng.me), Xinrong YANG, Guillaume BELLEGARDA, Milad SHAFIEE, [Yuhong CAO](https://www.yuhongcao.online), Auke IJSPEERT, [Guillaume SARTORETTI](https://cde.nus.edu.sg/me/staff/sartoretti-guillaume-a/)
 
 <p align="center">
   <img src="sata_overview.png" width="100%" />
