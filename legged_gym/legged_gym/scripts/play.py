@@ -45,15 +45,29 @@ def play(args):
     env_cfg.env.num_envs = min(env_cfg.env.num_envs, 1)
     env_cfg.env.episode_length_s = 20
     env_cfg.control.control_type = 'T'
-    env_cfg.test.use_test = True
-    env_cfg.test.checkpoint = 3000
-    env_cfg.test.vel = torch.tensor([0.0, 0.0, 0., 0.0], dtype=torch.float32)
+    
+    # --- (修复：适配 go2_jump 任务) ---
+    # 检查任务是否为 'go2_jump'
+    is_jump_task = (args.task == 'go2_jump')
+
+    if is_jump_task:
+        print("INFO: 'go2_jump' 任务检测到。正在修改 play.py 脚本以适配2D跳跃指令。")
+        env_cfg.test.use_test = True # 强制使用测试模式
+        # (修复：使用2D指令 (h_cmd, fwd_cmd) 替换 4D行走指令)
+        env_cfg.test.vel = torch.tensor([0.3, 0.2], dtype=torch.float32) # (h=0.3m, fwd=0.2m)
+        env_cfg.commands.heading_command = False # (修复：跳跃任务不需要heading)
+    else:
+        # (SATA行走任务的原始逻辑)
+        env_cfg.test.use_test = True
+        env_cfg.test.checkpoint = 3000
+        env_cfg.test.vel = torch.tensor([0.0, 0.0, 0., 0.0], dtype=torch.float32)
+        env_cfg.commands.heading_command = True
+    # --- (修复结束) ---
 
     env_cfg.control.activation_process = True
     env_cfg.control.hill_model = True
     env_cfg.control.motor_fatigue = True
-    env_cfg.commands.heading_command = True
-
+    
     env_cfg.terrain.mesh_type = 'plane'  # 'trimesh'
     env_cfg.terrain.num_rows = 5
     env_cfg.terrain.num_cols = 5
@@ -84,22 +98,47 @@ def play(args):
     stop_state_log = 1000  # number of steps before plotting states
     stop_rew_log = env.max_episode_length + 1  # number of steps before print average episode rewards
     img_idx = 0
-    vel_x = 1.0
-    env_cfg.test.vel = torch.tensor([vel_x, 0.0, 0., 0.], dtype=torch.float32)
-    change_vel = 0.2
-
+    
+    # --- (修复：使CHANGE_VEL逻辑适配跳跃任务) ---
+    vel_h = 0.3 # 目标高度
+    vel_f = 0.0 # 目标前向距离
+    change_vel_h = 0.1
+    change_vel_f = 0.1
+    
+    # (SATA的行走任务速度)
+    # vel_x = 1.0
+    # change_vel = 0.2
+    
     for i in range(10 * int(env.max_episode_length)):
         actions = policy(obs.detach())
         obs, _, rews, dones, infos = env.step(actions.detach())
         foot_z = env.rigid_body_states[0, env.feet_indices, 2].cpu().numpy()
-        if CHANGE_VEL:
+        
+        if CHANGE_VEL and is_jump_task:
+            # (跳跃任务的指令切换逻辑)
             if i % 100 == 0:
-                if vel_x > 1.5 or vel_x < -0.0:
-                    # change_vel = -change_vel
-                    change_vel = 0
-                vel_x += change_vel
-                # vel_x = 0.5
+                # 切换高度
+                if vel_h > 0.45 or vel_h < 0.15:
+                    change_vel_h = -change_vel_h
+                vel_h += change_vel_h
+                
+                # 切换前向距离 (仅在课程的后半段)
+                if env.general_scale > env_cfg.growth.forward_jump_threshold:
+                     if vel_f > 0.5 or vel_f < 0.0:
+                        change_vel_f = -change_vel_f
+                     vel_f += change_vel_f
+                
+                env.commands[0, 0] = vel_h
+                env.commands[0, 1] = vel_f
+                env_cfg.test.vel = torch.tensor([vel_h, vel_f], dtype=torch.float32)
+
+        elif CHANGE_VEL and not is_jump_task:
+            # (SATA行走任务的原始逻辑)
+            if i % 100 == 0:
+                vel_x = 1.0 # 示例：固定行走速度
                 env_cfg.test.vel = torch.tensor([vel_x , 0.0, 0., 0.], dtype=torch.float32)
+        # --- (修复结束) ---
+
         if RECORD_FRAMES:
             if i % 2:
                 filename = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name, 'exported',
@@ -110,6 +149,7 @@ def play(args):
             robot_pos = env.root_states[0, :3].cpu().numpy()
             camera_position = robot_pos + np.array([1, 1, 1])
             env.set_camera(camera_position, robot_pos)
+            
         if i < stop_state_log:
             logger.log_states(
                 {
@@ -118,9 +158,18 @@ def play(args):
                     'dof_pos': env.dof_pos[robot_index, joint_index].item(),
                     'dof_vel': env.dof_vel[robot_index, joint_index].item(),
                     'dof_torque': env.torques[robot_index, joint_index].item(),
-                    'command_x': env.commands[robot_index, 0].item(),
-                    'command_y': env.commands[robot_index, 1].item(),
-                    'command_yaw': env.commands[robot_index, 2].item(),
+                    
+                    # --- (修复：适配 go2_jump 任务) ---
+                    # (SATA行走任务的原始日志)
+                    # 'command_x': env.commands[robot_index, 0].item(),
+                    # 'command_y': env.commands[robot_index, 1].item(),
+                    # 'command_yaw': env.commands[robot_index, 2].item(),
+                    
+                    # (go2_jump 任务的新日志)
+                    'command_height': env.commands[robot_index, 0].item(),
+                    'command_fwd_dist': env.commands[robot_index, 1].item(),
+                    # --- (修复结束) ---
+                    
                     'base_vel_x': env.base_lin_vel[robot_index, 0].item(),
                     'base_vel_y': env.base_lin_vel[robot_index, 1].item(),
                     'base_vel_z': env.base_lin_vel[robot_index, 2].item(),
@@ -148,6 +197,9 @@ if __name__ == '__main__':
     EXPORT_POLICY = True
     RECORD_FRAMES = False
     MOVE_CAMERA = True
-    CHANGE_VEL = True
+    
+    # --- (修复：默认关闭 CHANGE_VEL，因为它在跳跃时可能不稳定) ---
+    CHANGE_VEL = False
+    
     args = get_args()
     play(args)
