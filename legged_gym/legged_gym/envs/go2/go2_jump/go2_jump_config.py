@@ -29,125 +29,144 @@
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 import torch
 
+# 导入SATA项目的基础配置 (GO2)
 from legged_gym.envs.go2.go2_config import GO2RoughCfg, GO2RoughCfgPPO
 
 class GO2JumpCfg(GO2RoughCfg):
+    
+    # --- 移植自 "Jumping" 项目：课程设置 ---
+    curriculum_thresholds = [0.8, 0.8, 0.7] #
+
+    class obstacles:
+        track_obstacle_height = True
+        track_obstacle_width = True
+        obstacle_height_range = [0.0, 0.25]
+        obstacle_width_range = [0.0, 0.4]
+    # ----------------------------------------
+    
     class env(GO2RoughCfg.env):
-        num_observations = 59
+        # --- 融合修改：观测维度 ---
+        # SATA(60) - 基础(3)指令 + 额外SATA(24) + 跳跃任务(10) = 67
+        # 基础(3+3+3+12+12=33) + 额外SATA(12 torques + 12 fatigue = 24) + 跳跃任务(10) = 67
+        num_observations = 67
         num_actions = 12
-        episode_length_s = 4.0 
+        episode_length_s = 10 #
 
     class init_state(GO2RoughCfg.init_state):
-        pos = [0.0, 0.0, 0.3]  # 初始位置
-        
-        # (借鉴 Bilibili-go2)
-        # 保持蹲伏（Crouch）姿态
-        default_joint_angles = { 
-            'FL_hip_joint': 0.1, 
-            'RL_hip_joint': 0.1,  
-            'FR_hip_joint': -0.1, 
-            'RR_hip_joint': -0.1, 
+        # --- 保留SATA的初始姿态 ---
+        pos = [0.0, 0.0, 0.10]  # x,y,z [m]
+        default_joint_angles = {  # = target angles [rad] when action = 0.0
+            'FL_hip_joint': 0.1,  # [rad]
+            'RL_hip_joint': 0.1,  # [rad]
+            'FR_hip_joint': -0.1,  # [rad]
+            'RR_hip_joint': -0.1,  # [rad]
 
-            'FL_thigh_joint': 1.0,  # 蹲伏
-            'RL_thigh_joint': 1.0,  # 蹲伏
-            'FR_thigh_joint': 1.0,  # 蹲伏
-            'RR_thigh_joint': 1.0,  # 蹲伏
+            'FL_thigh_joint': 1.45,  # [rad]
+            'RL_thigh_joint': 1.45,  # [rad]
+            'FR_thigh_joint': 1.45,  # [rad]
+            'RR_thigh_joint': 1.45,  # [rad]
 
-            'FL_calf_joint': -2.0,   # 蹲伏
-            'RL_calf_joint': -2.0,   # 蹲伏
-            'FR_calf_joint': -2.0,   # 蹲伏
-            'RR_calf_joint': -2.0,   # 蹲伏
-        }
+            'FL_calf_joint': -2.5,  # [rad]
+            'RL_calf_joint': -2.5,  # [rad]
+            'FR_calf_joint': -2.5,  # [rad]
+            'RR_calf_joint': -2.5,  # [rad]
+        } #
 
     class asset(GO2RoughCfg.asset):
-        file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/go2/urdf/go2_torque.urdf'
+        # --- 关键：保留SATA的URDF ---
+        file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/go2/urdf/go2_torque.urdf' #
         self_collisions = 0
-        terminate_after_contacts_on = ["base", "Head", "thigh", "calf"] 
-        penalize_contacts_on = []
+        terminate_after_contacts_on = ["Head"]
+        penalize_contacts_on = ["thigh", "calf", "trunk"]
+        penalize_contacts_force = 100.0
 
-    class terrain:
-        mesh_type = 'plane' 
-        curriculum = False 
-        measure_heights = False 
-
-        # --- (修复：添加父类 所需的缺失属性) ---
-        static_friction = 1.0
-        dynamic_friction = 1.0
-        restitution = 0.
-        # --- (修复结束) ---
-
-        # (SATA行走任务的trimesh参数，我们用不到，但保留在注释中以备将来使用)
-        # horizontal_scale = 0.1
-        # vertical_scale = 0.005
-        # border_size = 25
-        # terrain_proportions = [0.2, 0.8, 0, 0, 0.0]
-        # slope_treshold = 0.75
-
+    class terrain(GO2RoughCfg.terrain):
+        # --- 保留SATA的地面设置 ---
+        mesh_type = 'trimesh'
+        # ... (SATA的其余地形参数) ...
+        terrain_proportions = [0.2, 0.8, 0, 0, 0.0]
+        slope_treshold = 0.75
+    
+    # --- 移植自 "Jumping" 项目：任务指令 ---
     class commands(GO2RoughCfg.commands):
-        heading_command = False
-        resampling_time = 3.5 
-
+        curriculum_profile = 'jump'
+        resampling_time = 5
         class ranges:
-            target_height = [0.1, 0.5]  
-            target_forward_dist = [0.0, 0.6] 
-
+            target_lin_x = [0.0, 0.0]
+            target_lin_y = [0.0, 0.0]
+            target_ang_yaw = [0.0, 0.0]
+            target_height = [0.4, 0.4]
+    #
+    # ----------------------------------------
+    
     class control(GO2RoughCfg.control):
-        control_type = 'TG' # (SATA) 力矩 + 生长
+        # --- 关键：保留SATA的“肌肉” (力矩控制) ---
+        control_type = 'TG' # 'T': torque control, 'TG': torque control with growth
         activation_process = True
-        
-        # (SATA) 关闭Hill模型以实现爆发力
-        hill_model = False 
-        
-        motor_fatigue = True 
+        hill_model = True
+        motor_fatigue = True
         action_scale = 5
         decimation = 1
-
-    class noise:
+    #
+    # ----------------------------------------
+    
+    class noise(GO2RoughCfg.noise):
+        # --- 保留SATA的噪声设置 ---
         add_noise = True
-        noise_level = 1.0
-
-        class noise_scales:
+        noise_level = 1.5
+        class noise_scales(GO2RoughCfg.noise.noise_scales):
             dof_pos = 0.01
             dof_vel = 1.5
             lin_vel = 0.1
             ang_vel = 0.2
             gravity = 0.2
             height_measurements = 0.1
-            fatigue = 0.5 # (SATA) 
-            
+            fatigue = 0.5
+    #
+    # ----------------------------------------
+    
     class rewards(GO2RoughCfg.rewards):
-        only_positive_rewards = False
-        tracking_sigma = 0.25
-        soft_dof_pos_limit = 0.9 # (SATA)
+        # --- 移植自 "Jumping" 项目：奖励基础设置 ---
+        clip_reward = 0.1
+        soft_dof_pos_limit = 0.9
+        base_height_target = 0.4
+        # ----------------------------------------
         
-        # (OmniNet灵感) 空中"收腿"姿态
-        aerial_tuck_angles = { 
-            'FL_hip_joint': 0.0, 'RL_hip_joint': 0.0, 'FR_hip_joint': 0.0, 'RR_hip_joint': 0.0,
-            'FL_thigh_joint': 1.8, 'RL_thigh_joint': 1.8, 'FR_thigh_joint': 1.8, 'RR_thigh_joint': 1.8,
-            'FL_calf_joint': -2.7, 'RL_calf_joint': -2.7, 'FR_calf_joint': -2.7, 'RR_calf_joint': -2.7,
-        }
-
-        # (修复：采用 Bilibili-go2 奖励逻辑)
         class scales:
-            # 存活与稳定 (在go2_jump.py中乘以 general_scale)
-            termination = -50.0       
-            stability = -5.0        
-            tracking_ang_vel = -0.5 
-            landing_dist = -10.0
-            aerial_posture = -1.5   
-            
-            # --- 核心正向奖励 (不乘以 general_scale) ---
-            stand = 10.0            # (新) 奖励回到蹲伏姿态
-            jump_z_vel = 20.0       # (新) 奖励Z轴正速度
-            air_time = 20.0         # (新) 奖励腾空
-            
-            # 消耗与约束
-            dof_acc = -1e-6
-            motor_fatigue = -0.01
-            soft_dof_pos_limits = -5.0
+            # --- 移植自 "Jumping" 项目：21个奖励项 ---
+            # Task rewards
+            jump = 10.0
+            landing_pose = 5.0
+            orientation = 5.0
+            ang_vel_z = 5.0
 
-    class domain_rand:
-        # (SATA)
+            # Penalties
+            termination = -10.0
+            collision = -10.0
+            base_height_binary = -10.0
+            lin_vel_z = -5.0
+            ang_vel_xy = -0.05
+            orientation = -5.0
+            stand_still = -0.5
+
+            # Smoothness & Energy
+            torques = -1e-05
+            dof_vel = -0.001
+            dof_acc = -2.5e-07
+            action_rate = -0.01
+            dof_pos_limits = -5.0
+
+            # Leg & Gait Shaping
+            hop_stand_still = -0.5
+            swing_curled = -0.5
+            swing_unjerk = 0.3
+            stance_unjerk = 0.3
+            feet_air_time = 0.5
+        #
+        # ----------------------------------------
+
+    class domain_rand(GO2RoughCfg.domain_rand):
+        # --- 保留SATA的域随机化 ---
         randomize_friction = True
         friction_range = [0.5, 1.25]
         randomize_base_mass = True
@@ -157,36 +176,56 @@ class GO2JumpCfg(GO2RoughCfg):
         shifted_com_range_z = [-0.1, 0.1]
         push_robots = True
         push_interval_s = 4
-        max_push_vel_xy = 0.5 
-        max_push_vel_ang = 1.0 
+        max_push_vel_xy = 1.5
+        max_push_vel_ang = 1.0
         loss_action_obs = True
         loss_rate = 0.1
-
+    #
+    # ----------------------------------------
+    
     class growth:
-        # (SATA)
+        # --- 关键：保留SATA的“生长” (物理发育课程) ---
         max_torque_scale = 1.0
         start_torque_scale = 0.3
         max_rear_torque_scale = 1.0
         start_rear_torque_scale = 1.0
+
         max_freq = 200
         start_freq = 100
+
         k = 0.00003
         x0 = 1000 * 24
-
-        # (Atanassov灵感)
-        forward_jump_threshold = 0.5 
+    #
+    # ----------------------------------------
 
     class test:
+        # --- 保留SATA的测试设置 ---
         use_test = False
-        checkpoint = 3000 
-        vel = torch.tensor([0.0, 0.0], dtype=torch.float32) # 2D
+        checkpoint = 3000
+        vel = torch.tensor([1.0, 0.0, 0.0, 0.], dtype=torch.float32)
+    #
+    # ----------------------------------------
 
 class GO2JumpCfgPPO(GO2RoughCfgPPO):
+    
     class runner(GO2RoughCfgPPO.runner):
+        # --- 保留SATA的Runner设置 ---
         policy_class_name = 'ActorCritic'
         run_name = ''
-        experiment_name = 'SATA_Jump' 
-        max_iterations = 5000 
+        experiment_name = 'SATA_Jump' # 修改实验名称
+        max_iterations = 3000 # 你可能需要增加这个值
+    #
+    # ----------------------------------------
     
-    class algorithm(GO2RoughCfgPPO.algorithm):
-        entropy_coef = 0.01
+    # --- 移植自 "Jumping" 项目：更深的策略网络 ---
+    class policy:
+        init_noise_std = 1.0
+        actor_hidden_dims = [512, 512, 256, 128]
+        critic_hidden_dims = [512, 512, 256, 128]
+        activation = 'elu' # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
+        # only for 'ActorCriticRecurrent':
+        # rnn_type = 'lstm'
+        # rnn_hidden_size = 512
+        # rnn_num_layers = 1
+    #
+    # ----------------------------------------

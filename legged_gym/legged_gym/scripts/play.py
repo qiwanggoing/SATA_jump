@@ -30,6 +30,7 @@
 
 from legged_gym import LEGGED_GYM_ROOT_DIR
 import os
+import glob  # <--- MODIFIED: 增加了 glob 用于搜索文件
 
 import isaacgym
 from legged_gym.envs import *
@@ -40,34 +41,31 @@ import torch
 
 
 def play(args):
+    # <--- MODIFIED: 已改回正确的 get_cfgs
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
+    
     # override some parameters for testing
     env_cfg.env.num_envs = min(env_cfg.env.num_envs, 1)
+    
+    # --- (!!!) 关键修复 (!!!) ---
+    # 禁用GPU管线以防止 num_envs=1 时发生 SegFault
+    env_cfg.sim.use_gpu_pipeline = False 
+    # --- 修复结束 ---
+    
     env_cfg.env.episode_length_s = 20
     env_cfg.control.control_type = 'T'
     
-    # --- (修复：适配 go2_jump 任务) ---
-    # 检查任务是否为 'go2_jump'
-    is_jump_task = (args.task == 'go2_jump')
-
-    if is_jump_task:
-        print("INFO: 'go2_jump' 任务检测到。正在修改 play.py 脚本以适配2D跳跃指令。")
-        env_cfg.test.use_test = True # 强制使用测试模式
-        # (修复：使用2D指令 (h_cmd, fwd_cmd) 替换 4D行走指令)
-        env_cfg.test.vel = torch.tensor([0.3, 0.2], dtype=torch.float32) # (h=0.3m, fwd=0.2m)
-        env_cfg.commands.heading_command = False # (修复：跳跃任务不需要heading)
-    else:
-        # (SATA行走任务的原始逻辑)
-        env_cfg.test.use_test = True
-        env_cfg.test.checkpoint = 3000
-        env_cfg.test.vel = torch.tensor([0.0, 0.0, 0., 0.0], dtype=torch.float32)
-        env_cfg.commands.heading_command = True
-    # --- (修复结束) ---
+    # <--- MODIFIED: 移除了硬编码的 checkpoint，我们将自动查找
+    # env_cfg.test.use_test = True 
+    # env_cfg.test.checkpoint = 3000
+    
+    env_cfg.test.vel = torch.tensor([0.0, 0.0, 0., 0.0], dtype=torch.float32)
 
     env_cfg.control.activation_process = True
     env_cfg.control.hill_model = True
     env_cfg.control.motor_fatigue = True
-    
+    env_cfg.commands.heading_command = True
+
     env_cfg.terrain.mesh_type = 'plane'  # 'trimesh'
     env_cfg.terrain.num_rows = 5
     env_cfg.terrain.num_cols = 5
@@ -81,16 +79,82 @@ def play(args):
     # prepare environment
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     obs = env.get_observations()
+    
     # load policy
-    train_cfg.runner.resume = True
+    # <--- MODIFIED: 移除了 resume，我们将使用显式的 .load()
+    # train_cfg.runner.resume = True 
     ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args, train_cfg=train_cfg)
+
+    # --- START OF MODIFICATIONS (自动查找逻辑) ---
+    
+    # 1. 自动查找最新的 checkpoint
+    checkpoint_path = args.checkpoint
+    if not checkpoint_path:
+        print(f"No checkpoint specified for task '{args.task}'. Searching for the latest model...")
+        
+        # 从训练配置中获取实验名称
+        experiment_name = train_cfg.runner.experiment_name
+        
+        # 构建日志目录路径
+        log_dir = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', experiment_name)
+        
+        if not os.path.exists(log_dir):
+            print(f"Error: Log directory '{log_dir}' does not exist.")
+            print("Please run training (train.py) first.")
+            return
+
+        # 查找所有日期文件夹
+        date_folders = [f for f in glob.glob(os.path.join(log_dir, '*')) if os.path.isdir(f)]
+        if not date_folders:
+            print(f"Error: No training runs found in '{log_dir}'.")
+            return
+        
+        # 获取最新的日期文件夹
+        latest_run_dir = max(date_folders, key=os.path.getmtime)
+        print(f"Found latest run: {latest_run_dir}")
+        
+        # 查找该文件夹中所有的 .pt 文件
+        model_files = glob.glob(os.path.join(latest_run_dir, '*.pt'))
+        if not model_files:
+            print(f"Error: No .pt models found in the latest run directory: {latest_run_dir}")
+            return
+        
+        # 查找迭代次数最高的模型
+        def get_iter_from_file(filename):
+            basename = os.path.basename(filename)
+            try:
+                # 'model_3000.pt' -> 3000
+                return int(basename.split('_')[1].split('.')[0])
+            except:
+                return -1 # 忽略 'policy.pt' 或其他格式
+
+        latest_model_file = max(model_files, key=get_iter_from_file)
+        
+        if get_iter_from_file(latest_model_file) == -1:
+             print(f"Error: Could not find a valid model (e.g., 'model_3000.pt') in {latest_run_dir}")
+             return
+
+        print(f"Loading latest model: {latest_model_file}")
+        checkpoint_path = latest_model_file
+    
+    if not checkpoint_path:
+        print("Error: Could not find or load a checkpoint.")
+        return
+
+    # 2. 显式加载模型
+    ppo_runner.load(checkpoint_path)
     policy = ppo_runner.get_inference_policy(device=env.device)
 
+    # --- END OF MODIFICATIONS ---
+
+
     # export policy as a jit module (used to run it from C++)
-    if EXPORT_POLICY:
-        path = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name, 'exported', 'policies')
-        export_policy_as_jit(ppo_runner.alg.actor_critic, path)
-        print('Exported policy as jit script to: ', path)
+    # <--- MODIFIED: 自动导出，移除了 "if EXPORT_POLICY:"
+    path = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name, 'exported', 'policies')
+    os.makedirs(path, exist_ok=True) # <--- MODIFIED: 确保文件夹存在
+    export_policy_as_jit(ppo_runner.alg.actor_critic, path)
+    print('Exported policy as jit script to: ', os.path.join(path, 'policy.pt')) # <--- MODIFIED: 打印完整路径
+
 
     logger = Logger(env.dt)
     robot_index = 0  # which robot is used for logging
@@ -98,58 +162,33 @@ def play(args):
     stop_state_log = 1000  # number of steps before plotting states
     stop_rew_log = env.max_episode_length + 1  # number of steps before print average episode rewards
     img_idx = 0
-    
-    # --- (修复：使CHANGE_VEL逻辑适配跳跃任务) ---
-    vel_h = 0.3 # 目标高度
-    vel_f = 0.0 # 目标前向距离
-    change_vel_h = 0.1
-    change_vel_f = 0.1
-    
-    # (SATA的行走任务速度)
-    # vel_x = 1.0
-    # change_vel = 0.2
-    
+    vel_x = 1.0
+    env_cfg.test.vel = torch.tensor([vel_x, 0.0, 0., 0.], dtype=torch.float32)
+    change_vel = 0.2
+
     for i in range(10 * int(env.max_episode_length)):
         actions = policy(obs.detach())
         obs, _, rews, dones, infos = env.step(actions.detach())
         foot_z = env.rigid_body_states[0, env.feet_indices, 2].cpu().numpy()
-        
-        if CHANGE_VEL and is_jump_task:
-            # (跳跃任务的指令切换逻辑)
+        if CHANGE_VEL:
             if i % 100 == 0:
-                # 切换高度
-                if vel_h > 0.45 or vel_h < 0.15:
-                    change_vel_h = -change_vel_h
-                vel_h += change_vel_h
-                
-                # 切换前向距离 (仅在课程的后半段)
-                if env.general_scale > env_cfg.growth.forward_jump_threshold:
-                     if vel_f > 0.5 or vel_f < 0.0:
-                        change_vel_f = -change_vel_f
-                     vel_f += change_vel_f
-                
-                env.commands[0, 0] = vel_h
-                env.commands[0, 1] = vel_f
-                env_cfg.test.vel = torch.tensor([vel_h, vel_f], dtype=torch.float32)
-
-        elif CHANGE_VEL and not is_jump_task:
-            # (SATA行走任务的原始逻辑)
-            if i % 100 == 0:
-                vel_x = 1.0 # 示例：固定行走速度
+                if vel_x > 1.5 or vel_x < -0.0:
+                    # change_vel = -change_vel
+                    change_vel = 0
+                vel_x += change_vel
+                # vel_x = 0.5
                 env_cfg.test.vel = torch.tensor([vel_x , 0.0, 0., 0.], dtype=torch.float32)
-        # --- (修复结束) ---
-
         if RECORD_FRAMES:
             if i % 2:
                 filename = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name, 'exported',
                                         'frames', f"{img_idx}.png")
+                os.makedirs(os.path.dirname(filename), exist_ok=True) # <--- MODIFIED: 确保文件夹存在
                 env.gym.write_viewer_image_to_file(env.viewer, filename)
                 img_idx += 1
         if MOVE_CAMERA:
             robot_pos = env.root_states[0, :3].cpu().numpy()
             camera_position = robot_pos + np.array([1, 1, 1])
             env.set_camera(camera_position, robot_pos)
-            
         if i < stop_state_log:
             logger.log_states(
                 {
@@ -158,18 +197,9 @@ def play(args):
                     'dof_pos': env.dof_pos[robot_index, joint_index].item(),
                     'dof_vel': env.dof_vel[robot_index, joint_index].item(),
                     'dof_torque': env.torques[robot_index, joint_index].item(),
-                    
-                    # --- (修复：适配 go2_jump 任务) ---
-                    # (SATA行走任务的原始日志)
-                    # 'command_x': env.commands[robot_index, 0].item(),
-                    # 'command_y': env.commands[robot_index, 1].item(),
-                    # 'command_yaw': env.commands[robot_index, 2].item(),
-                    
-                    # (go2_jump 任务的新日志)
-                    'command_height': env.commands[robot_index, 0].item(),
-                    'command_fwd_dist': env.commands[robot_index, 1].item(),
-                    # --- (修复结束) ---
-                    
+                    'command_x': env.commands[robot_index, 0].item(),
+                    'command_y': env.commands[robot_index, 1].item(),
+                    'command_yaw': env.commands[robot_index, 2].item(),
                     'base_vel_x': env.base_lin_vel[robot_index, 0].item(),
                     'base_vel_y': env.base_lin_vel[robot_index, 1].item(),
                     'base_vel_z': env.base_lin_vel[robot_index, 2].item(),
@@ -185,21 +215,20 @@ def play(args):
         elif i == stop_state_log:
             logger.plot_states()
         if 0 < i < stop_rew_log:
-            if infos["episode"]:
-                num_episodes = torch.sum(env.reset_buf).item()
+            # <--- MODIFIED: 适配 SATA 仓库的 'ep_infos' 格式
+            if infos.get("ep_infos"): 
+                num_episodes = len(infos["ep_infos"])
                 if num_episodes > 0:
-                    logger.log_rewards(infos["episode"], num_episodes)
+                    # <--- MODIFIED: 适配 SATA 仓库的 'ep_infos' 格式
+                    logger.log_rewards(infos["ep_infos"], num_episodes) 
         elif i == stop_rew_log:
             logger.print_rewards()
 
 
 if __name__ == '__main__':
-    EXPORT_POLICY = True
+    # <--- MODIFIED: 移除了 EXPORT_POLICY，现在总是导出
     RECORD_FRAMES = False
     MOVE_CAMERA = True
-    
-    # --- (修复：默认关闭 CHANGE_VEL，因为它在跳跃时可能不稳定) ---
-    CHANGE_VEL = False
-    
+    CHANGE_VEL = True
     args = get_args()
     play(args)
