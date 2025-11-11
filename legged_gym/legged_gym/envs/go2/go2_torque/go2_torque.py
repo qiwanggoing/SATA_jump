@@ -23,7 +23,7 @@ def parallel_axis_theorem(I_com, mass, d):
     return I_com + mass * d_squared
 
 
-def update_inertia(I_box, mass_box, com_box, mass_point, point_pos):
+def update_inertia(I_box, mass_box, com_box, mass_point, point_pos):    # arbitrary center of mass shift
     new_com = update_com(I_box, mass_box, com_box, mass_point, point_pos)
 
     displacement_box = com_box - new_com
@@ -198,7 +198,7 @@ class GO2Torque(LeggedRobot):
         # step physics and render each frame
         self.render()
         self.rew_buf[:] = 0.
-        while self.current_dt * self.current_freq < 1:
+        while self.current_dt * self.current_freq < 1:      #current_freq: control frequency updated by growth model
             self.torques = self._compute_torques(self.actions).view(self.torques.shape)
             self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(self.torques))
             self.gym.simulate(self.sim)
@@ -216,16 +216,16 @@ class GO2Torque(LeggedRobot):
             self.privileged_obs_buf = torch.clip(self.privileged_obs_buf, -clip_obs, clip_obs)
         return self.obs_buf, self.privileged_obs_buf, self.rew_buf, self.reset_buf, self.extras
 
-    def _compute_torques(self, actions):
+    def _compute_torques(self, actions):    # compute torques from actions using muscle and growth model(hill+fatigue+activation)
         self._update_growth_scale()
-        actions_scaled = actions[:, :12] * self.cfg.control.action_scale
+        actions_scaled = actions[:, :12] * self.cfg.control.action_scale # action: [-1,1] -> original output scale
         self.torques_action = actions_scaled
         torques_limits = self.current_torque_limit_scale * self.torque_limits
         torques_limits[6:] = torques_limits[6:] * self.r_leg_scaled
 
         # muscle activation process
         if self.cfg.control.activation_process:
-            current_activation_sign = torch.tanh(self.torques_action / torques_limits)
+            current_activation_sign = torch.tanh(self.torques_action / torques_limits) # -1 to 1 smooth and continuous
             activation_sign = (current_activation_sign - self.activation_sign) * 0.6 + self.activation_sign
         else:
             activation_sign = self.torques_action / torques_limits
@@ -329,18 +329,25 @@ class GO2Torque(LeggedRobot):
                                              self.command_ranges["ang_vel_yaw"][1] * self.general_scale)
 
     def _resample_commands(self, env_ids):
-        """ Randommly select commands of some environments
-
+        """ Randommly select commands of some environments based on the curriculum scale 
+        
         Args:
             env_ids (List[int]): Environments ids for which new commands are needed
         """
         x_cmd_sum = self.command_ranges["lin_vel_x"][1] + self.command_ranges["lin_vel_x"][0]
         x_cmd_diff = self.command_ranges["lin_vel_x"][1] - self.command_ranges["lin_vel_x"][0]
+
+        # x axis velocity (forward/backward) command
+        # 指令范围会随着 self.general_scale (G(t)) 从一个很小的范围（例如 G(t)=0.1 时，范围约 [0.3, 0.7]）逐渐扩大到配置文件中的完整范围（G(t)=1 时，范围 [-0.5, 1.5]）
         self.commands[env_ids, 0] = torch_rand_float(
             max(x_cmd_sum * 0.5 - x_cmd_diff * self.general_scale, self.command_ranges["lin_vel_x"][0]),
             min(x_cmd_sum * 0.5 + x_cmd_diff * self.general_scale, self.command_ranges["lin_vel_x"][1]),
             (len(env_ids), 1),
             device=self.device).squeeze(1)
+        
+        # y aixs and yaw angular velocity (sideways/turning) commands
+        # 训练刚开始时 (G(t)≈0)：指令范围约等于 [0, 0]。机器人只会被要求学习X轴（前进），不会被要求侧移或转向。
+        # 训练后期 (G(t)≈1)：指令范围扩大到完整的 [-0.5, 0.5] 和 [-1.5, 1.5]。
         self.commands[env_ids, 1] = torch_rand_float(self.command_ranges["lin_vel_y"][0] * self.general_scale,
                                                      self.command_ranges["lin_vel_y"][1] * self.general_scale,
                                                      (len(env_ids), 1),
@@ -365,7 +372,7 @@ class GO2Torque(LeggedRobot):
         return torch.sum(out_of_limits, dim=1)
 
     def _reward_forward(self):
-        # Reward for moving forward
+        # Reward for moving forward, tracking the command to move forward 
         return torch.exp(
             -torch.abs(self.base_lin_vel[:, 0] - (
                     self.cfg.commands.ranges.lin_vel_x[1] + self.cfg.commands.ranges.lin_vel_x[0]) / 2 * max((
@@ -374,12 +381,13 @@ class GO2Torque(LeggedRobot):
             # max((0.5 - self.general_scale), self.cfg.rewards.tracking_sigma))
 
     def _reward_head_height(self):
-        # Reward for keeping the head high
+        # Reward for keeping the head high and holding its height
         base_height = torch.mean(self.root_states[:, 2].unsqueeze(1) - self.measured_heights, dim=1).clip(
             max=self.cfg.rewards.base_height_target)
         head_up = -(self.projected_gravity[:, 0].clip(min=min(0, -0.2 * (1.5 - self.general_scale * 2))))
         return base_height * (1 + self.general_scale) + head_up
 
+    #在训练早期（G(t)≈0），这两个奖励项几乎为零。这意味着机器人不需要关心侧向移动或转向,随着G(t)增长，这些奖励项的权重才逐渐增加，迫使机器人学会更复杂的Y轴和Yaw轴跟踪。
     def _reward_moving_y(self):
         return torch.exp(-torch.abs(
             self.base_lin_vel[:, 1] - self.commands[:, 1]) / self.cfg.rewards.tracking_sigma) * self.general_scale
@@ -388,11 +396,12 @@ class GO2Torque(LeggedRobot):
         return torch.exp(-torch.abs(
             self.base_ang_vel[:, 2] - self.commands[:, 2]) / self.cfg.rewards.tracking_sigma) * self.general_scale
 
+    # penalize large motor fatigue on already has large fatigue motor to encourage energy-efficient movements
     def _reward_motor_fatigue(self):
         return torch.sum(self.motor_fatigue * torch.abs(self.torques_action), dim=1)
 
     def _reward_roll(self):
         return torch.abs(self.projected_gravity[:, 1])
 
-    def _reward_lin_vel_z(self):
+    def _reward_lin_vel_z(self):        # penalize vertical movement bad for jumping
         return torch.square(self.base_lin_vel[:, 2])

@@ -87,7 +87,7 @@ class LeggedRobot(BaseTask):
         self.actions = torch.clip(actions, -clip_actions, clip_actions).to(self.device)
         # step physics and render each frame
         self.render()
-        for _ in range(self.cfg.control.decimation):
+        for _ in range(self.cfg.control.decimation): # decimation = number of sim steps(in mujoco/isaac gym) per control step(in rl)
             self.torques = self._compute_torques(self.actions).view(self.torques.shape)
             self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(self.torques))
             self.gym.simulate(self.sim)
@@ -383,13 +383,13 @@ class LeggedRobot(BaseTask):
         # pd controller
         actions_scaled = actions * self.cfg.control.action_scale
         control_type = self.cfg.control.control_type
-        if control_type == "P":
+        if control_type == "P":     # position control: joint target positions
             torques = self.p_gains * (
                         actions_scaled + self.default_dof_pos - self.dof_pos) - self.d_gains * self.dof_vel
-        elif control_type == "V":
+        elif control_type == "V":   # velocity control: joint target velocities
             torques = self.p_gains * (actions_scaled - self.dof_vel) - self.d_gains * (
                         self.dof_vel - self.last_dof_vel) / self.sim_params.dt
-        elif control_type == "T":
+        elif control_type == "T":   # torque control: direct torques
             torques = actions_scaled
         else:
             raise NameError(f"Unknown controller type: {control_type}")

@@ -35,7 +35,7 @@ import torch.optim as optim
 from rsl_rl.modules import ActorCritic
 from rsl_rl.storage import RolloutStorage
 
-class PPO:
+class PPO: 
     actor_critic: ActorCritic
     def __init__(self,
                  actor_critic,

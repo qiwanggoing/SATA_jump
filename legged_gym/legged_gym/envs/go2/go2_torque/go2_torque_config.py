@@ -34,12 +34,12 @@ from legged_gym.envs.go2.go2_config import GO2RoughCfg, GO2RoughCfgPPO
 
 class GO2TorqueCfg(GO2RoughCfg):
     class env(GO2RoughCfg.env):
-        num_observations = 60
+        num_observations = 60   #SATA: 60
         num_actions = 12
         episode_length_s = 10
 
-    class init_state(GO2RoughCfg.init_state):
-        pos = [0.0, 0.0, 0.10]  # x,y,z [m]
+    class init_state(GO2RoughCfg.init_state): # Lying down
+        pos = [0.0, 0.0, 0.10]  # x,y,z [m] SATA: 0.10
         default_joint_angles = {  # = target angles [rad] when action = 0.0
             'FL_hip_joint': 0.1,  # [rad]
             'RL_hip_joint': 0.1,  # [rad]
@@ -58,7 +58,7 @@ class GO2TorqueCfg(GO2RoughCfg):
         }
 
     class asset(GO2RoughCfg.asset):
-        file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/go2/urdf/go2_torque.urdf'
+        file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/go2/urdf/go2_torque.urdf' # go2's urdf file
         self_collisions = 0
         terminate_after_contacts_on = ["Head"]
         penalize_contacts_on = ["thigh", "calf"]
@@ -85,7 +85,7 @@ class GO2TorqueCfg(GO2RoughCfg):
         num_rows = 10  # number of terrain rows (levels)
         num_cols = 20  # number of terrain cols (types)
         # terrain types: [smooth slope, rough slope, stairs up, stairs down, discrete]
-        terrain_proportions = [0.2, 0.8, 0, 0, 0.0]
+        terrain_proportions = [0.2, 0.8, 0, 0, 0.0] # only smooth and rough slope
         # trimesh only:
         slope_treshold = 0.75  # slopes above this threshold will be corrected to vertical surfaces
 
@@ -101,11 +101,11 @@ class GO2TorqueCfg(GO2RoughCfg):
 
     class control(GO2RoughCfg.control):
         control_type = 'TG' # 'T': torque control, 'TG': torque control with growth
-        activation_process = True
-        hill_model = True
-        motor_fatigue = True
+        activation_process = True       # Activation model
+        hill_model = True               # Hill muscle model
+        motor_fatigue = True            # Motor fatigue model(internal states)
         action_scale = 5
-        decimation = 1
+        decimation = 1                  # apply A action every N sim steps(1=every sim step)
 
     class noise:
         add_noise = True
@@ -121,7 +121,7 @@ class GO2TorqueCfg(GO2RoughCfg):
             fatigue = 0.5
 
     class rewards(GO2RoughCfg.rewards):
-        only_positive_rewards = False
+        only_positive_rewards = False       
         tracking_sigma = 0.25
         base_height_target = 0.3
         max_contact_force = 100.
