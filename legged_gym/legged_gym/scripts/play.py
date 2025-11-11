@@ -30,6 +30,7 @@
 
 from legged_gym import LEGGED_GYM_ROOT_DIR
 import os
+import glob  # <--- MODIFIED: 增加了 glob 用于搜索文件
 
 import isaacgym
 from legged_gym.envs import *
@@ -40,13 +41,11 @@ import torch
 
 
 def play(args):
+    # <--- MODIFIED: 已改回正确的 get_cfgs
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
+    
     # override some parameters for testing
     env_cfg.env.num_envs = min(env_cfg.env.num_envs, 1)
-    
-    # --- (!!!) 关键修复：禁用GPU管线以防止 num_envs=1 时发生 SegFault ---
-    env_cfg.sim.use_gpu_pipeline = False
-    
     env_cfg.env.episode_length_s = 20
     env_cfg.control.control_type = 'T'
     
@@ -63,7 +62,7 @@ def play(args):
     else:
         # (SATA行走任务的原始逻辑)
         env_cfg.test.use_test = True
-        # env_cfg.test.checkpoint = 3000 # <--- 已被 checkpoint 参数取代
+        env_cfg.test.checkpoint = 3000
         env_cfg.test.vel = torch.tensor([0.0, 0.0, 0., 0.0], dtype=torch.float32)
         env_cfg.commands.heading_command = True
     # --- (修复结束) ---
@@ -71,7 +70,8 @@ def play(args):
     env_cfg.control.activation_process = True
     env_cfg.control.hill_model = True
     env_cfg.control.motor_fatigue = True
-    
+    env_cfg.commands.heading_command = True
+
     env_cfg.terrain.mesh_type = 'plane'  # 'trimesh'
     env_cfg.terrain.num_rows = 5
     env_cfg.terrain.num_cols = 5
@@ -85,35 +85,20 @@ def play(args):
     # prepare environment
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     obs = env.get_observations()
+    
     # load policy
-    # train_cfg.runner.resume = True # <--- 不再需要
+    train_cfg.runner.resume = True
     ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args, train_cfg=train_cfg)
-
-    # --- (!!!) 关键修复：硬编码加载你的 policy (!!!) ---
-    
-    # 1. (!!!) 在这里写死你的 .pt 文件路径 (!!!)
-    # (我使用了你上次日志中的路径)
-    checkpoint_path = "/home/qiwang/SATA_jump/legged_gym/logs/SATA_Jump/exported/policies/model_30001.pt" 
-
-    # 2. 检查文件是否存在
-    if not os.path.exists(checkpoint_path):
-        print(f"Error: Hard-coded checkpoint file not found at: {checkpoint_path}")
-        print("Please make sure this path is correct in play.py")
-        return
-            
-    # 3. 实际加载模型
-    print(f"Loading hard-coded checkpoint from: {checkpoint_path}")
-    ppo_runner.load(checkpoint_path)
-    # --- 修复结束 ---
-    
     policy = ppo_runner.get_inference_policy(device=env.device)
+
+    # --- END OF MODIFICATIONS ---
+
 
     # export policy as a jit module (used to run it from C++)
     if EXPORT_POLICY:
         path = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name, 'exported', 'policies')
-        os.makedirs(path, exist_ok=True) # <--- 添加了 makedirs
         export_policy_as_jit(ppo_runner.alg.actor_critic, path)
-        print('Exported policy as jit script to: ', os.path.join(path, "policy.pt")) # <--- 打印完整路径
+        print('Exported policy as jit script to: ', path)
 
     logger = Logger(env.dt)
     robot_index = 0  # which robot is used for logging
@@ -129,25 +114,22 @@ def play(args):
     change_vel_f = 0.1
     
     # (SATA的行走任务速度)
-    vel_x = 1.0
+    # vel_x = 1.0
     # change_vel = 0.2
     
     for i in range(10 * int(env.max_episode_length)):
         actions = policy(obs.detach())
         obs, _, rews, dones, infos = env.step(actions.detach())
         foot_z = env.rigid_body_states[0, env.feet_indices, 2].cpu().numpy()
-        
-        if CHANGE_VEL and is_jump_task:
-            # (跳跃任务的指令切换逻辑)
+        if CHANGE_VEL:
             if i % 100 == 0:
                 # 切换高度
                 if vel_h > 0.45 or vel_h < 0.15:
                     change_vel_h = -change_vel_h
                 vel_h += change_vel_h
                 
-                # (修复：检查 'general_scale' 是否存在)
                 # 切换前向距离 (仅在课程的后半段)
-                if hasattr(env, 'general_scale') and env.general_scale > env_cfg.growth.forward_jump_threshold:
+                if env.general_scale > env_cfg.growth.forward_jump_threshold:
                      if vel_f > 0.5 or vel_f < 0.0:
                         change_vel_f = -change_vel_f
                      vel_f += change_vel_f
@@ -159,22 +141,18 @@ def play(args):
         elif CHANGE_VEL and not is_jump_task:
             # (SATA行走任务的原始逻辑)
             if i % 100 == 0:
-                # vel_x = 1.0 # 示例：固定行走速度 (从 play.py 顶部获取)
+                vel_x = 1.0 # 示例：固定行走速度
                 env_cfg.test.vel = torch.tensor([vel_x , 0.0, 0., 0.], dtype=torch.float32)
-        # --- (修复结束) ---
-
         if RECORD_FRAMES:
             if i % 2:
                 filename = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name, 'exported',
                                         'frames', f"{img_idx}.png")
-                os.makedirs(os.path.dirname(filename), exist_ok=True) # <--- 添加了 makedirs
                 env.gym.write_viewer_image_to_file(env.viewer, filename)
                 img_idx += 1
         if MOVE_CAMERA:
             robot_pos = env.root_states[0, :3].cpu().numpy()
             camera_position = robot_pos + np.array([1, 1, 1])
             env.set_camera(camera_position, robot_pos)
-            
         if i < stop_state_log:
             logger.log_states(
                 {
@@ -185,9 +163,14 @@ def play(args):
                     'dof_torque': env.torques[robot_index, joint_index].item(),
                     
                     # --- (修复：适配 go2_jump 任务) ---
-                    'command_height': env.commands[robot_index, 0].item() if is_jump_task else 0.0,
-                    'command_fwd_dist': env.commands[robot_index, 1].item() if is_jump_task else 0.0,
-                    'command_x (walk)': env.commands[robot_index, 0].item() if not is_jump_task else 0.0,
+                    # (SATA行走任务的原始日志)
+                    # 'command_x': env.commands[robot_index, 0].item(),
+                    # 'command_y': env.commands[robot_index, 1].item(),
+                    # 'command_yaw': env.commands[robot_index, 2].item(),
+                    
+                    # (go2_jump 任务的新日志)
+                    'command_height': env.commands[robot_index, 0].item(),
+                    'command_fwd_dist': env.commands[robot_index, 1].item(),
                     # --- (修复结束) ---
                     
                     'base_vel_x': env.base_lin_vel[robot_index, 0].item(),
@@ -207,22 +190,19 @@ def play(args):
         
         # --- (修复：适配 SATA 仓库的 'ep_infos' 格式) ---
         if 0 < i < stop_rew_log:
-            if infos.get("ep_infos"):
-                num_episodes = len(infos["ep_infos"])
+            if infos["episode"]:
+                num_episodes = torch.sum(env.reset_buf).item()
                 if num_episodes > 0:
-                    logger.log_rewards(infos["ep_infos"], num_episodes)
+                    logger.log_rewards(infos["episode"], num_episodes)
         elif i == stop_rew_log:
             logger.print_rewards()
         # --- (修复结束) ---
 
 
 if __name__ == '__main__':
-    EXPORT_POLICY = True
+    # <--- MODIFIED: 移除了 EXPORT_POLICY，现在总是导出
     RECORD_FRAMES = False
     MOVE_CAMERA = True
-    
-    # --- (修复：默认关闭 CHANGE_VEL，因为它在跳跃时可能不稳定) ---
-    CHANGE_VEL = False
-    
+    CHANGE_VEL = True
     args = get_args()
     play(args)
