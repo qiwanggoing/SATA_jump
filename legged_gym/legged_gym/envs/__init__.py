@@ -36,8 +36,8 @@ from .go2.go2_torque.go2_torque import GO2Torque
 from .go2.go2_config import GO2RoughCfg, GO2RoughCfgPPO
 
 # jump task
-from .go2.go2_jump.go2_jump import GO2Jump
-from .go2.go2_jump.go2_jump_config import GO2JumpCfg, GO2JumpCfgPPO
+from .go2.go2_torque_jump.go2_torque_jump import Go2TorqueJump
+from .go2.go2_torque_jump.go2_torque_jump_config import GO2TorqueJumpCfg, GO2TorqueJumpCfgPPO
 
 
 import os
@@ -47,4 +47,4 @@ from legged_gym.utils.task_registry import task_registry
 
 task_registry.register("go2_torque", GO2Torque, GO2TorqueCfg(), GO2TorqueCfgPPO())
 task_registry.register("go2_rough", LeggedRobot, GO2RoughCfg(), GO2RoughCfgPPO())
-task_registry.register("go2_jump", GO2Jump, GO2JumpCfg, GO2JumpCfgPPO)
+task_registry.register("go2_torque_jump", Go2TorqueJump, GO2TorqueJumpCfg, GO2TorqueJumpCfgPPO)
